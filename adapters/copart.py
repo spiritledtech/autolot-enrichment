@@ -19,7 +19,7 @@ Find the img tag's class and update PHOTO_SELECTORS below.
 import logging
 import re
 
-from scrapling.fetchers import PlayWright
+from scrapling.fetchers import PlayWrightFetcher as PlayWright
 
 log = logging.getLogger(__name__)
 

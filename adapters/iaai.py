@@ -20,7 +20,7 @@ import json
 import logging
 import os
 
-from scrapling.fetchers import PlayWright
+from scrapling.fetchers import PlayWrightFetcher as PlayWright
 
 log = logging.getLogger(__name__)
 
