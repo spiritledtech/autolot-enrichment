@@ -33,8 +33,8 @@ from vin_decode import decode_vin
 from photo_upload import upload_photos
 from alerts import check_failure_rate, send_alert
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
+SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"].strip()
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
 MAX_ATTEMPTS = 3
 STALE_MINUTES = 5
