@@ -1,7 +1,10 @@
 """
 AutoLot Enrichment Worker
 
-Polls enrichment_jobs every POLL_INTERVAL_SECONDS. For each pending job:
+Primary trigger: Supabase Database Webhook → POST /webhook (instant).
+Fallback: polls enrichment_jobs every POLL_INTERVAL_SECONDS for crash recovery.
+
+For each pending job:
   1. Claim it atomically (set status='processing', increment attempts)
   2. Fetch vehicle record
   3. VIN decode via NHTSA
@@ -18,8 +21,10 @@ import asyncio
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
+from fastapi import FastAPI, Response
 from supabase import create_client, Client
 
 from adapters.copart import CopartAdapter
@@ -30,7 +35,7 @@ from alerts import check_failure_rate, send_alert
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
-POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "10"))
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
 MAX_ATTEMPTS = 3
 STALE_MINUTES = 5
 FAILURE_CHECK_INTERVAL = 300  # seconds between failure-rate checks
@@ -228,12 +233,8 @@ async def process_one(supabase: Client) -> bool:
     return True
 
 
-async def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-    log.info("AutoLot enrichment worker starting — polling every %ds", POLL_INTERVAL)
+async def poll_loop() -> None:
+    """Fallback poller — runs every POLL_INTERVAL seconds for crash recovery."""
     supabase = get_supabase()
     last_failure_check = 0.0
 
@@ -250,13 +251,36 @@ async def main() -> None:
             if not worked:
                 await asyncio.sleep(POLL_INTERVAL)
 
-        except KeyboardInterrupt:
-            log.info("Worker stopped by user")
-            break
         except Exception as exc:
-            log.error("Unexpected error in main loop: %s", exc, exc_info=True)
+            log.error("Unexpected error in poll loop: %s", exc, exc_info=True)
             await asyncio.sleep(POLL_INTERVAL)
 
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    asyncio.create_task(poll_loop())
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.post("/webhook")
+async def webhook() -> Response:
+    """
+    Supabase Database Webhook target — fires on INSERT to enrichment_jobs.
+    Processes the job immediately instead of waiting for the next poll cycle.
+    """
+    supabase = get_supabase()
+    await process_one(supabase)
+    return Response(status_code=200)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    import uvicorn
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    log.info("AutoLot enrichment worker starting (webhook + %ds fallback poll)", POLL_INTERVAL)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
