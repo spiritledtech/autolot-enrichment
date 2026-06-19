@@ -2,5 +2,5 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "playwright install chromium && python worker.py"
+startCommand = "playwright install --with-deps chromium && uvicorn worker:app --host 0.0.0.0 --port $PORT"
 restartPolicyType = "always"
