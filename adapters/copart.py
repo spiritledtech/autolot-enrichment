@@ -50,7 +50,7 @@ class CopartAdapter:
             headless=True,
             network_idle=True,          # wait for SPA to finish loading
             timeout=30_000,
-        ).async_get(url)
+        ).async_fetch(url)
 
         photos = self._extract_photos(page)
         condition_notes = self._extract_damage(page)

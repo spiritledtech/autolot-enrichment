@@ -69,7 +69,7 @@ class IAAIAdapter:
             network_idle=True,
             timeout=30_000,
             cookies=[{"name": k, "value": v, "domain": ".iaai.com", "path": "/"} for k, v in cookies.items()],
-        ).async_get(url)
+        ).async_fetch(url)
 
         # Detect auth failure (redirected to login page)
         page_url = str(page.url) if hasattr(page, "url") else ""
