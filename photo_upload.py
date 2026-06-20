@@ -17,7 +17,7 @@ import re
 from pathlib import PurePosixPath
 from urllib.parse import quote, urlsplit, urlunsplit
 
-import httpx
+import aiohttp
 from PIL import Image
 from supabase import create_client
 
@@ -93,30 +93,19 @@ async def upload_photos(vehicle_id: str, photo_urls: list[str]) -> list[str]:
     urls_to_process = photo_urls[:MAX_PHOTOS]
 
     _HEADERS = {"User-Agent": "Mozilla/5.0"}
-    # follow_redirects=False so we can sanitize Location headers before following.
-    # IAAI's resizer redirects to the actual CDN URL and that Location header
-    # contains a literal \n at position 40, which httpx rejects when auto-following.
-    async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT, follow_redirects=False) as client:
+    # Use aiohttp instead of httpx — httpx 0.28.1 raises InvalidURL for IAAI's
+    # resizer URLs even after sanitization due to an internal validation quirk
+    # with the ~ characters in imageKeys. aiohttp/yarl is more lenient.
+    timeout = aiohttp.ClientTimeout(total=DOWNLOAD_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         for i, url in enumerate(urls_to_process):
             url = _safe_url(url)
-            log.warning("Photo %d url: %r", i, url[:150])
             if not url.startswith(("http://", "https://")):
                 continue
             try:
-                # Manually follow redirects so we can percent-encode Location headers.
-                for _ in range(10):  # max 10 hops
-                    resp = await client.get(url, headers=_HEADERS)
-                    if resp.status_code in (301, 302, 303, 307, 308):
-                        location = _safe_url(resp.headers.get("location", ""))
-                        if not location:
-                            break
-                        log.warning("Redirect %d → %r", resp.status_code, location[:150])
-                        url = location
-                        continue
-                    break
-                resp.raise_for_status()
-
-                content = resp.content
+                async with session.get(url, headers=_HEADERS, allow_redirects=True) as resp:
+                    resp.raise_for_status()
+                    content = await resp.read()
                 if len(content) > MAX_PHOTO_BYTES:
                     continue  # skip oversized
 
