@@ -12,28 +12,21 @@ Cookie refresh cadence: ~every 30 days. When cookies expire:
   4. Update IAAI_SESSION_COOKIES in Railway env vars
   5. Any IAAI auth failure triggers an immediate alert email (see alerts.py)
 
-IMPORTANT — DOM selectors need validation against live IAAI pages.
-Run `python -c "from adapters.iaai import IAAIAdapter; import asyncio; asyncio.run(IAAIAdapter().fetch('https://www.iaai.com/vehicles/...'))"` on a real lot URL to check selectors.
+Photos are captured via Playwright network response interception rather than
+DOM scraping. IAAI's thumbnail images route through vis.iaai.com/resizer which
+redirects to the actual CDN URL. Chromium handles that redirect internally;
+we intercept the clean final CDN URL from the 200 response.
 """
 
 import json
 import logging
 import os
-import re
 
 from playwright.async_api import async_playwright
 
 log = logging.getLogger(__name__)
 
 _COOKIES_RAW = os.getenv("IAAI_SESSION_COOKIES", "")
-
-PHOTO_SELECTORS = [
-    "img[src*='iaa.com/vehicle-photos']",
-    "img[src*='iaai.com'][src*='photo']",
-    ".vehicle-image img",
-    "[data-testid*='photo'] img",
-    ".slick-slide img",
-]
 
 DAMAGE_SELECTORS = [
     "[data-testid='damage-description']",
@@ -63,6 +56,7 @@ class IAAIAdapter:
         (triggers the immediate alert in worker.py).
         """
         cookies = _parse_cookies()
+        photos: list[str] = []
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
@@ -74,8 +68,29 @@ class IAAIAdapter:
                         for k, v in cookies.items()
                     ])
                 page = await context.new_page()
+
+                # Intercept network responses to capture clean CDN photo URLs.
+                # IAAI thumbnails request vis.iaai.com/resizer which 302-redirects
+                # to the actual CDN. Chromium follows that redirect fine; we capture
+                # the final 200 response URL — no \n / control-char issues.
+                def _on_response(response):
+                    if len(photos) >= 20:
+                        return
+                    if response.status != 200:
+                        return
+                    if not response.headers.get("content-type", "").startswith("image/"):
+                        return
+                    # Only keep images that came via the IAAI resizer redirect
+                    redirected_from = response.request.redirected_from
+                    if not (redirected_from and "vis.iaai.com" in redirected_from.url):
+                        return
+                    cdn_url = response.url
+                    if cdn_url not in photos:
+                        photos.append(cdn_url)
+
+                page.on("response", _on_response)
                 await page.goto(url, wait_until="load", timeout=45_000)
-                await page.wait_for_timeout(3_000)  # let React finish rendering
+                await page.wait_for_timeout(3_000)
 
                 # Detect auth failure (redirected to login page)
                 page_url = page.url
@@ -88,30 +103,12 @@ class IAAIAdapter:
                     if "sign in" in title or "login" in title:
                         raise IAAIAuthError("IAAI page title indicates login wall — session may be expired")
 
-                photos = await self._extract_photos(page)
                 condition_notes = await self._extract_damage(page)
             finally:
                 await browser.close()
 
-        log.info("IAAI: %d photos, condition_notes=%r (url=%s)", len(photos), condition_notes[:40] if condition_notes else "", url)
+        log.warning("IAAI: %d photos via network intercept (url=%s)", len(photos), url)
         return {"photos": photos, "condition_notes": condition_notes}
-
-    async def _extract_photos(self, page) -> list[str]:
-        photos: list[str] = []
-        for selector in PHOTO_SELECTORS:
-            elements = await page.query_selector_all(selector)
-            log.info("IAAI selector %r matched %d elements", selector, len(elements))
-            if not elements:
-                continue
-            for el in elements:
-                raw = await el.get_attribute("src") or await el.get_attribute("data-src") or ""
-                src = re.sub(r"[\x00-\x1f\x7f]", "", raw)
-                log.info("IAAI photo raw: %r  cleaned: %r", raw[:100], src[:100])
-                if src and src not in photos:
-                    photos.append(src)
-            if photos:
-                break
-        return photos[:20]
 
     async def _extract_damage(self, page) -> str:
         for selector in DAMAGE_SELECTORS:
