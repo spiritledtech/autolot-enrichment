@@ -156,7 +156,10 @@ async def enrich_vehicle(vehicle: dict) -> dict:
     listing_url: str | None = vehicle.get("auction_listing_url")
     auction_source: str | None = vehicle.get("auction_source")
 
-    if listing_url:
+    # Skip Playwright scraping if the extension already uploaded photos
+    already_has_photos = bool(vehicle.get("photos"))
+
+    if listing_url and not already_has_photos:
         adapter = None
         if auction_source == "copart" or (listing_url and "copart." in listing_url):
             adapter = CopartAdapter()
