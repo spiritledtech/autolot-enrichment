@@ -111,14 +111,15 @@ class IAAIAdapter:
                         raise IAAIAuthError("IAAI page title indicates login wall — session may be expired")
 
                 # Strategy 2: DOM currentSrc fallback.
-                # If network interception got nothing (e.g. direct CDN, no redirect),
-                # read img.currentSrc — the browser has normalized these URLs (no \n).
+                # Filter strictly to vis.iaai.com — the resizer domain for all IAAI photos.
+                # Without this filter the fallback picks up Google tracking pixels and
+                # other 3rd-party images that happen to be on the page.
                 if not photos:
                     log.warning("IAAI: network intercept got 0 photos, trying DOM currentSrc fallback")
                     srcs = await page.evaluate("""
                         () => [...document.querySelectorAll('img')]
                             .map(img => img.currentSrc || img.src || '')
-                            .filter(src => src.startsWith('https://') && src.length > 60)
+                            .filter(src => src.startsWith('https://vis.iaai.com/') && src.length > 60)
                     """)
                     for src in srcs:
                         if src and src not in photos:

@@ -100,6 +100,7 @@ async def upload_photos(vehicle_id: str, photo_urls: list[str]) -> list[str]:
     async with aiohttp.ClientSession(timeout=timeout) as session:
         for i, url in enumerate(urls_to_process):
             url = _safe_url(url)
+            log.warning("Photo %d bytes[0:50]: %s", i, url[:50].encode("utf-8").hex())
             if not url.startswith(("http://", "https://")):
                 continue
             try:
