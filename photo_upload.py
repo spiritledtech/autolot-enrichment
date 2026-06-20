@@ -70,15 +70,27 @@ async def upload_photos(vehicle_id: str, photo_urls: list[str]) -> list[str]:
     public_urls: list[str] = []
     urls_to_process = photo_urls[:MAX_PHOTOS]
 
-    async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT, follow_redirects=True) as client:
+    _HEADERS = {"User-Agent": "Mozilla/5.0"}
+    # follow_redirects=False so we can sanitize Location headers before following.
+    # IAAI's resizer redirects to the actual CDN URL and that Location header
+    # contains a literal \n at position 40, which httpx rejects when auto-following.
+    async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT, follow_redirects=False) as client:
         for i, url in enumerate(urls_to_process):
-            log.info("Photo URL %d raw: %r", i, url[:120])
-            url = re.sub(r"[\x00-\x1f\x7f]", "", url)  # strip all ASCII control chars
-            log.info("Photo URL %d sanitized: %r", i, url[:120])
+            url = re.sub(r"[\x00-\x1f\x7f]", "", url)
             if not url.startswith(("http://", "https://")):
                 continue
             try:
-                resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                # Manually follow redirects so we can strip control chars from Location.
+                for _ in range(10):  # max 10 hops
+                    resp = await client.get(url, headers=_HEADERS)
+                    if resp.status_code in (301, 302, 303, 307, 308):
+                        location = re.sub(r"[\x00-\x1f\x7f]", "", resp.headers.get("location", ""))
+                        if not location:
+                            break
+                        log.warning("Redirect %d → %r", resp.status_code, location[:120])
+                        url = location
+                        continue
+                    break
                 resp.raise_for_status()
 
                 content = resp.content
