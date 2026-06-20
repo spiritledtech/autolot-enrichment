@@ -61,7 +61,10 @@ class IAAIAdapter:
         pending: list = []  # Response objects; bodies read after page load
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
             try:
                 context = await browser.new_context()
                 if cookies:

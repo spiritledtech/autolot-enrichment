@@ -45,7 +45,10 @@ class CopartAdapter:
         Returns {"photos": [...], "condition_notes": "..."}.
         """
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
             try:
                 page = await browser.new_page()
                 await page.goto(url, wait_until="load", timeout=30_000)
