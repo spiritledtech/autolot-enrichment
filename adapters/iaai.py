@@ -9,7 +9,7 @@ Cookie refresh cadence: ~every 30 days. When cookies expire:
   1. Log into iaai.com manually in a browser
   2. Open DevTools → Application → Cookies
   3. Copy all cookie values for iaai.com as JSON
-  4. Update IAAI_SESSION_COOKIES in Railway/Render env vars
+  4. Update IAAI_SESSION_COOKIES in Railway env vars
   5. Any IAAI auth failure triggers an immediate alert email (see alerts.py)
 
 IMPORTANT — DOM selectors need validation against live IAAI pages.
@@ -20,7 +20,7 @@ import json
 import logging
 import os
 
-from scrapling.fetchers import PlayWrightFetcher as PlayWright
+from playwright.async_api import async_playwright
 
 log = logging.getLogger(__name__)
 
@@ -63,52 +63,56 @@ class IAAIAdapter:
         """
         cookies = _parse_cookies()
 
-        page = await PlayWright(
-            auto_match=True,
-            headless=True,
-            network_idle=True,
-            timeout=30_000,
-            cookies=[{"name": k, "value": v, "domain": ".iaai.com", "path": "/"} for k, v in cookies.items()],
-        ).async_fetch(url)
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            try:
+                context = await browser.new_context()
+                if cookies:
+                    await context.add_cookies([
+                        {"name": k, "value": v, "domain": ".iaai.com", "path": "/"}
+                        for k, v in cookies.items()
+                    ])
+                page = await context.new_page()
+                await page.goto(url, wait_until="networkidle", timeout=30_000)
 
-        # Detect auth failure (redirected to login page)
-        page_url = str(page.url) if hasattr(page, "url") else ""
-        if "login" in page_url.lower() or "signin" in page_url.lower():
-            raise IAAIAuthError(f"IAAI session expired or invalid — redirected to {page_url}")
+                # Detect auth failure (redirected to login page)
+                page_url = page.url
+                if "login" in page_url.lower() or "signin" in page_url.lower():
+                    raise IAAIAuthError(f"IAAI session expired or invalid — redirected to {page_url}")
 
-        # Also check page title for login indicators
-        title_els = page.css("title")
-        if title_els:
-            title = (title_els[0].text or "").lower()
-            if "sign in" in title or "login" in title:
-                raise IAAIAuthError("IAAI page title indicates login wall — session may be expired")
+                title_el = await page.query_selector("title")
+                if title_el:
+                    title = (await title_el.text_content() or "").lower()
+                    if "sign in" in title or "login" in title:
+                        raise IAAIAuthError("IAAI page title indicates login wall — session may be expired")
 
-        photos = self._extract_photos(page)
-        condition_notes = self._extract_damage(page)
+                photos = await self._extract_photos(page)
+                condition_notes = await self._extract_damage(page)
+            finally:
+                await browser.close()
 
         log.info("IAAI: %d photos, condition_notes=%r (url=%s)", len(photos), condition_notes[:40] if condition_notes else "", url)
-
         return {"photos": photos, "condition_notes": condition_notes}
 
-    def _extract_photos(self, page) -> list[str]:
+    async def _extract_photos(self, page) -> list[str]:
         photos: list[str] = []
         for selector in PHOTO_SELECTORS:
-            elements = page.css(selector)
+            elements = await page.query_selector_all(selector)
             if not elements:
                 continue
             for el in elements:
-                src = el.attrib.get("src", "") or el.attrib.get("data-src", "")
+                src = await el.get_attribute("src") or await el.get_attribute("data-src") or ""
                 if src and src not in photos:
                     photos.append(src)
             if photos:
                 break
         return photos[:20]
 
-    def _extract_damage(self, page) -> str:
+    async def _extract_damage(self, page) -> str:
         for selector in DAMAGE_SELECTORS:
-            elements = page.css(selector)
+            elements = await page.query_selector_all(selector)
             if elements:
-                text = (elements[0].text or "").strip()
+                text = (await elements[0].text_content() or "").strip()
                 if text:
                     return text
         return ""

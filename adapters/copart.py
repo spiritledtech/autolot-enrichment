@@ -6,11 +6,10 @@ Fetches a Copart vehicle listing and extracts:
   - Condition/damage notes
 
 IMPORTANT — DOM selectors need validation against live Copart pages.
-Copart is a JS-heavy SPA with Cloudflare protection. If PlayWright
-fetches start failing, check:
-  1. Whether Scrapling/Playwright is still bypassing Cloudflare
+Copart is a JS-heavy SPA with Cloudflare protection. If fetches start
+failing, check:
+  1. Whether Playwright is still bypassing Cloudflare
   2. Whether the CSS selectors below still match (Copart updates them often)
-  3. IAAI cookies (separate env var, separate adapter)
 
 Selector audit: open a Copart lot page, right-click a photo → Inspect.
 Find the img tag's class and update PHOTO_SELECTORS below.
@@ -19,7 +18,7 @@ Find the img tag's class and update PHOTO_SELECTORS below.
 import logging
 import re
 
-from scrapling.fetchers import PlayWrightFetcher as PlayWright
+from playwright.async_api import async_playwright
 
 log = logging.getLogger(__name__)
 
@@ -45,45 +44,41 @@ class CopartAdapter:
         Fetch a Copart listing and extract photos + condition notes.
         Returns {"photos": [...], "condition_notes": "..."}.
         """
-        page = await PlayWright(
-            auto_match=True,
-            headless=True,
-            network_idle=True,          # wait for SPA to finish loading
-            timeout=30_000,
-        ).async_fetch(url)
-
-        photos = self._extract_photos(page)
-        condition_notes = self._extract_damage(page)
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page()
+                await page.goto(url, wait_until="networkidle", timeout=30_000)
+                photos = await self._extract_photos(page)
+                condition_notes = await self._extract_damage(page)
+            finally:
+                await browser.close()
 
         log.info("Copart: %d photos, condition_notes=%r (url=%s)", len(photos), condition_notes[:40] if condition_notes else "", url)
-
         return {"photos": photos, "condition_notes": condition_notes}
 
-    def _extract_photos(self, page) -> list[str]:
+    async def _extract_photos(self, page) -> list[str]:
         photos: list[str] = []
         for selector in PHOTO_SELECTORS:
-            elements = page.css(selector)
+            elements = await page.query_selector_all(selector)
             if not elements:
                 continue
             for el in elements:
-                src = el.attrib.get("src", "")
+                src = await el.get_attribute("src") or ""
                 if not src or "thumbnail" in src or "/th/" in src:
                     continue
-                # Copart thumbnail URLs contain /th/ or have small dimension hints.
-                # Convert known thumbnail patterns to full-size.
                 src = re.sub(r"/[A-Z]{1,3}_pic/", "/f/", src)
                 if src not in photos:
                     photos.append(src)
             if photos:
-                break  # found photos with this selector, stop trying others
+                break
         return photos[:20]
 
-    def _extract_damage(self, page) -> str:
+    async def _extract_damage(self, page) -> str:
         for selector in DAMAGE_SELECTORS:
-            elements = page.css(selector)
+            elements = await page.query_selector_all(selector)
             if elements:
-                text = elements[0].text or ""
-                text = text.strip()
+                text = (await elements[0].text_content() or "").strip()
                 if text:
                     return text
         return ""
