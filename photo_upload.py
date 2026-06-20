@@ -68,6 +68,9 @@ async def upload_photos(vehicle_id: str, photo_urls: list[str]) -> list[str]:
 
     async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT, follow_redirects=True) as client:
         for i, url in enumerate(urls_to_process):
+            url = "".join(url.split())  # strip embedded newlines/whitespace
+            if not url.startswith(("http://", "https://")):
+                continue
             try:
                 resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
                 resp.raise_for_status()
