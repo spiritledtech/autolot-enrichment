@@ -73,7 +73,8 @@ class IAAIAdapter:
                         for k, v in cookies.items()
                     ])
                 page = await context.new_page()
-                await page.goto(url, wait_until="networkidle", timeout=30_000)
+                await page.goto(url, wait_until="load", timeout=45_000)
+                await page.wait_for_timeout(3_000)  # let React finish rendering
 
                 # Detect auth failure (redirected to login page)
                 page_url = page.url
