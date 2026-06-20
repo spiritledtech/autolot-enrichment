@@ -90,7 +90,8 @@ class IAAIAdapter:
                         pending.append(response)
 
                 page.on("response", _on_response)
-                await page.goto(url, wait_until="load", timeout=45_000)
+                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                log.warning("IAAI: page navigation complete, waiting for images...")
 
                 # Scroll to trigger lazy-loaded images then wait for them
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
