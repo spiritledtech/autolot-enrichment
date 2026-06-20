@@ -19,6 +19,7 @@ Run `python -c "from adapters.iaai import IAAIAdapter; import asyncio; asyncio.r
 import json
 import logging
 import os
+import re
 
 from playwright.async_api import async_playwright
 
@@ -99,10 +100,13 @@ class IAAIAdapter:
         photos: list[str] = []
         for selector in PHOTO_SELECTORS:
             elements = await page.query_selector_all(selector)
+            log.info("IAAI selector %r matched %d elements", selector, len(elements))
             if not elements:
                 continue
             for el in elements:
-                src = "".join((await el.get_attribute("src") or await el.get_attribute("data-src") or "").split())
+                raw = await el.get_attribute("src") or await el.get_attribute("data-src") or ""
+                src = re.sub(r"[\x00-\x1f\x7f]", "", raw)
+                log.info("IAAI photo raw: %r  cleaned: %r", raw[:100], src[:100])
                 if src and src not in photos:
                     photos.append(src)
             if photos:

@@ -11,12 +11,16 @@ Bucket must be created before first use:
 
 import hashlib
 import io
+import logging
 import os
+import re
 from pathlib import PurePosixPath
 
 import httpx
 from PIL import Image
 from supabase import create_client
+
+log = logging.getLogger(__name__)
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
@@ -68,7 +72,9 @@ async def upload_photos(vehicle_id: str, photo_urls: list[str]) -> list[str]:
 
     async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT, follow_redirects=True) as client:
         for i, url in enumerate(urls_to_process):
-            url = "".join(url.split())  # strip embedded newlines/whitespace
+            log.info("Photo URL %d raw: %r", i, url[:120])
+            url = re.sub(r"[\x00-\x1f\x7f]", "", url)  # strip all ASCII control chars
+            log.info("Photo URL %d sanitized: %r", i, url[:120])
             if not url.startswith(("http://", "https://")):
                 continue
             try:
@@ -94,10 +100,6 @@ async def upload_photos(vehicle_id: str, photo_urls: list[str]) -> list[str]:
                 public_urls.append(public_url)
 
             except Exception as exc:
-                # Non-fatal: log and skip this photo
-                import logging
-                logging.getLogger(__name__).warning(
-                    "Photo %d failed for vehicle %s (%s): %s", i, vehicle_id, url[:80], exc
-                )
+                log.warning("Photo %d failed for vehicle %s (%s): %s", i, vehicle_id, url[:80], exc)
 
     return public_urls
