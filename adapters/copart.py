@@ -48,7 +48,8 @@ class CopartAdapter:
             browser = await p.chromium.launch(headless=True)
             try:
                 page = await browser.new_page()
-                await page.goto(url, wait_until="networkidle", timeout=30_000)
+                await page.goto(url, wait_until="load", timeout=30_000)
+                await page.wait_for_timeout(3_000)
                 photos = await self._extract_photos(page)
                 condition_notes = await self._extract_damage(page)
             finally:
@@ -64,7 +65,7 @@ class CopartAdapter:
             if not elements:
                 continue
             for el in elements:
-                src = await el.get_attribute("src") or ""
+                src = (await el.get_attribute("src") or "").strip()
                 if not src or "thumbnail" in src or "/th/" in src:
                     continue
                 src = re.sub(r"/[A-Z]{1,3}_pic/", "/f/", src)

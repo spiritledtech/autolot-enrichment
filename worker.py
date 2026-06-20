@@ -158,7 +158,7 @@ async def enrich_vehicle(vehicle: dict) -> dict:
 
     if listing_url:
         adapter = None
-        if auction_source == "copart" or (listing_url and "copart.com" in listing_url):
+        if auction_source == "copart" or (listing_url and "copart." in listing_url):
             adapter = CopartAdapter()
         elif auction_source == "iaai" or (listing_url and "iaai.com" in listing_url):
             adapter = IAAIAdapter()
