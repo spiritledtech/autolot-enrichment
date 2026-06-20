@@ -82,7 +82,7 @@ class CopartAdapter:
         for selector in DAMAGE_SELECTORS:
             elements = page.css(selector)
             if elements:
-                text = elements[0].text_content or ""
+                text = elements[0].text or ""
                 text = text.strip()
                 if text:
                     return text

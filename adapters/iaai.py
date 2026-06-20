@@ -79,7 +79,7 @@ class IAAIAdapter:
         # Also check page title for login indicators
         title_els = page.css("title")
         if title_els:
-            title = (title_els[0].text_content or "").lower()
+            title = (title_els[0].text or "").lower()
             if "sign in" in title or "login" in title:
                 raise IAAIAuthError("IAAI page title indicates login wall — session may be expired")
 
@@ -108,7 +108,7 @@ class IAAIAdapter:
         for selector in DAMAGE_SELECTORS:
             elements = page.css(selector)
             if elements:
-                text = (elements[0].text_content or "").strip()
+                text = (elements[0].text or "").strip()
                 if text:
                     return text
         return ""
