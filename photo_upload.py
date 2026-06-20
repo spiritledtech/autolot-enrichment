@@ -15,6 +15,7 @@ import logging
 import os
 import re
 from pathlib import PurePosixPath
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 from PIL import Image
@@ -36,6 +37,27 @@ _CONTENT_TYPE_MAP = {
     ".webp": "image/webp",
     ".gif": "image/gif",
 }
+
+
+def _safe_url(url: str) -> str:
+    """Percent-encode ASCII control characters in URL components.
+
+    re.sub stripping \n has proven unreliable across Railway deploys.
+    Encoding \n as %0A is equivalent: httpx accepts it, and IAAI's resizer
+    decodes %0A server-side, so the image key resolves correctly.
+    """
+    try:
+        p = urlsplit(url)
+        safe_chars = "/:@!$&'()*+,;=~.-_"
+        return urlunsplit((
+            p.scheme,
+            p.netloc,
+            quote(p.path, safe=safe_chars),
+            quote(p.query, safe=safe_chars + "?"),
+            p.fragment,
+        ))
+    except Exception:
+        return re.sub(r"[\x00-\x1f\x7f]", "", url)
 
 
 def _ext_from_url(url: str) -> str:
@@ -76,18 +98,19 @@ async def upload_photos(vehicle_id: str, photo_urls: list[str]) -> list[str]:
     # contains a literal \n at position 40, which httpx rejects when auto-following.
     async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT, follow_redirects=False) as client:
         for i, url in enumerate(urls_to_process):
-            url = re.sub(r"[\x00-\x1f\x7f]", "", url)
+            url = _safe_url(url)
+            log.warning("Photo %d url: %r", i, url[:150])
             if not url.startswith(("http://", "https://")):
                 continue
             try:
-                # Manually follow redirects so we can strip control chars from Location.
+                # Manually follow redirects so we can percent-encode Location headers.
                 for _ in range(10):  # max 10 hops
                     resp = await client.get(url, headers=_HEADERS)
                     if resp.status_code in (301, 302, 303, 307, 308):
-                        location = re.sub(r"[\x00-\x1f\x7f]", "", resp.headers.get("location", ""))
+                        location = _safe_url(resp.headers.get("location", ""))
                         if not location:
                             break
-                        log.warning("Redirect %d → %r", resp.status_code, location[:120])
+                        log.warning("Redirect %d → %r", resp.status_code, location[:150])
                         url = location
                         continue
                     break
@@ -112,6 +135,6 @@ async def upload_photos(vehicle_id: str, photo_urls: list[str]) -> list[str]:
                 public_urls.append(public_url)
 
             except Exception as exc:
-                log.warning("Photo %d failed for vehicle %s (%s): %s", i, vehicle_id, url[:80], exc)
+                log.warning("Photo %d failed for vehicle %s (%r): %s", i, vehicle_id, url[:150], exc)
 
     return public_urls
