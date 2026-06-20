@@ -165,7 +165,9 @@ async def enrich_vehicle(vehicle: dict) -> dict:
 
         if adapter:
             try:
-                scraped = await adapter.fetch(listing_url)
+                scraped = await asyncio.wait_for(
+                    adapter.fetch(listing_url), timeout=90.0
+                )
 
                 # Only backfill condition_notes if not already set
                 if scraped.get("condition_notes") and not vehicle.get("condition_notes"):

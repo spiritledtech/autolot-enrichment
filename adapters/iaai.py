@@ -60,11 +60,13 @@ class IAAIAdapter:
         cookies = _parse_cookies()
         pending: list = []  # Response objects; bodies read after page load
 
+        log.warning("IAAI: launching browser for %s", url)
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
                 args=["--no-sandbox", "--disable-dev-shm-usage"],
             )
+            log.warning("IAAI: browser launched, navigating...")
             try:
                 context = await browser.new_context()
                 if cookies:
