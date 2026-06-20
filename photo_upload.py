@@ -82,6 +82,38 @@ def _compress(content: bytes) -> bytes:
     return buf.getvalue()
 
 
+async def upload_photo_bytes(vehicle_id: str, photo_data: list[bytes]) -> list[str]:
+    """
+    Compress and upload already-downloaded image bytes to Supabase Storage.
+    Used by adapters (e.g. IAAI) that capture raw bytes via browser interception
+    instead of returning URLs for a separate download step.
+    Returns list of public Supabase Storage URLs.
+    """
+    supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    public_urls: list[str] = []
+
+    for i, content in enumerate(photo_data[:MAX_PHOTOS]):
+        try:
+            content = _compress(content)
+            url_hash = hashlib.sha256(content).hexdigest()[:8]
+            storage_path = f"{vehicle_id}/{i:02d}_{url_hash}.jpg"
+
+            supabase.storage.from_(BUCKET).upload(
+                path=storage_path,
+                file=content,
+                file_options={"content-type": "image/jpeg", "upsert": "true"},
+            )
+
+            public_url = (
+                f"{SUPABASE_URL}/storage/v1/object/public/{BUCKET}/{storage_path}"
+            )
+            public_urls.append(public_url)
+        except Exception as exc:
+            log.warning("Photo %d bytes upload failed for vehicle %s: %s", i, vehicle_id, exc)
+
+    return public_urls
+
+
 async def upload_photos(vehicle_id: str, photo_urls: list[str]) -> list[str]:
     """
     Download up to MAX_PHOTOS images from photo_urls and upload to Supabase Storage.

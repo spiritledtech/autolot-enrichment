@@ -1,25 +1,11 @@
 """
 IAAI (Insurance Auto Auctions) Listing Adapter
 
-IAAI requires an authenticated account to view full VIN and listing photos.
-Session cookies are stored in the IAAI_SESSION_COOKIES environment variable
-as a JSON string ({"key": "value", ...}).
-
-Cookie refresh cadence: ~every 30 days. When cookies expire:
-  1. Log into iaai.com manually in a browser
-  2. Open DevTools → Application → Cookies
-  3. Copy all cookie values for iaai.com as JSON
-  4. Update IAAI_SESSION_COOKIES in Railway env vars
-  5. Any IAAI auth failure triggers an immediate alert email (see alerts.py)
-
-Photos are captured via Playwright network response interception. IAAI images
-route through a resizer (vis.iaai.com or similar) that 302-redirects to the
-actual CDN. Chromium follows that redirect internally; we capture the clean
-CDN URL from the final 200 response.
-
-Fallback: if network interception yields 0 photos (e.g. lazy-loaded or
-non-redirect CDN), we pull img.currentSrc from the DOM — the browser has
-already resolved and normalized these URLs.
+Photos are captured by intercepting Playwright network responses during page load.
+Chromium handles vis.iaai.com resizer URLs natively — including the literal \n
+characters in the HTML src attributes that every Python HTTP client rejects.
+We read the raw image bytes directly from the browser's already-completed
+responses, skipping any separate download step entirely.
 """
 
 import json
@@ -39,6 +25,9 @@ DAMAGE_SELECTORS = [
     "[class*='damage']",
 ]
 
+_MIN_PHOTO_BYTES = 5_000       # skip images smaller than 5 KB (icons, pixels)
+_MAX_PHOTO_BYTES = 20_971_520  # 20 MB cap
+
 
 def _parse_cookies() -> dict:
     if not _COOKIES_RAW:
@@ -50,17 +39,26 @@ def _parse_cookies() -> dict:
         return {}
 
 
+def _is_iaai_image(response) -> bool:
+    """True if this response (or any redirect ancestor) came from an iaai.com domain."""
+    req = response.request
+    while req:
+        if "iaai.com" in req.url:
+            return True
+        req = req.redirected_from
+    return "iaai.com" in response.url
+
+
 class IAAIAdapter:
     async def fetch(self, url: str) -> dict:
         """
         Fetch an IAAI listing and extract photos + condition notes.
-        Returns {"photos": [...], "condition_notes": "..."}.
+        Returns {"photo_data": [bytes, ...], "condition_notes": "..."}.
 
-        Raises IAAIAuthError if the page looks like a login redirect
-        (triggers the immediate alert in worker.py).
+        Raises IAAIAuthError if the page looks like a login redirect.
         """
         cookies = _parse_cookies()
-        photos: list[str] = []
+        pending: list = []  # Response objects; bodies read after page load
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
@@ -73,66 +71,58 @@ class IAAIAdapter:
                     ])
                 page = await context.new_page()
 
-                # Strategy 1: network response interception.
-                # Any image/* response that came via a redirect is a vehicle photo
-                # (CDN served directly = UI asset; CDN via resizer redirect = photo).
-                # Works for vis.iaai.com/resizer and any regional variant.
+                # Collect IAAI image Response objects synchronously.
+                # We read their bodies asynchronously after the page finishes loading,
+                # while the browser is still open and the responses are still valid.
                 def _on_response(response):
-                    if len(photos) >= 20:
+                    if len(pending) >= 20:
                         return
                     if response.status != 200:
                         return
                     if not response.headers.get("content-type", "").startswith("image/"):
                         return
-                    if not response.request.redirected_from:
-                        return  # no redirect = likely a UI asset, skip
-                    cdn_url = response.url
-                    if cdn_url not in photos:
-                        photos.append(cdn_url)
+                    if _is_iaai_image(response):
+                        pending.append(response)
 
                 page.on("response", _on_response)
                 await page.goto(url, wait_until="load", timeout=45_000)
 
-                # Scroll to trigger lazy-loaded images, then wait for them
+                # Scroll to trigger lazy-loaded images then wait for them
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 await page.wait_for_timeout(2_000)
                 await page.evaluate("window.scrollTo(0, 0)")
                 await page.wait_for_timeout(1_000)
 
-                # Detect auth failure (redirected to login page)
+                # Auth checks
                 page_url = page.url
                 if "login" in page_url.lower() or "signin" in page_url.lower():
-                    raise IAAIAuthError(f"IAAI session expired or invalid — redirected to {page_url}")
+                    raise IAAIAuthError(f"IAAI session expired — redirected to {page_url}")
 
                 title_el = await page.query_selector("title")
                 if title_el:
                     title = (await title_el.text_content() or "").lower()
                     if "sign in" in title or "login" in title:
-                        raise IAAIAuthError("IAAI page title indicates login wall — session may be expired")
+                        raise IAAIAuthError("IAAI page title indicates login wall")
 
-                # Strategy 2: DOM currentSrc fallback.
-                # Filter strictly to vis.iaai.com — the resizer domain for all IAAI photos.
-                # Without this filter the fallback picks up Google tracking pixels and
-                # other 3rd-party images that happen to be on the page.
-                if not photos:
-                    log.warning("IAAI: network intercept got 0 photos, trying DOM currentSrc fallback")
-                    srcs = await page.evaluate("""
-                        () => [...document.querySelectorAll('img')]
-                            .map(img => img.currentSrc || img.src || '')
-                            .filter(src => src.startsWith('https://vis.iaai.com/') && src.length > 60)
-                    """)
-                    for src in srcs:
-                        if src and src not in photos:
-                            photos.append(src)
-                            if len(photos) >= 20:
-                                break
+                # Read response bodies while the browser is still open
+                photo_data: list[bytes] = []
+                seen: set[int] = set()
+                for resp in pending:
+                    try:
+                        body = await resp.body()
+                        h = hash(body)
+                        if _MIN_PHOTO_BYTES <= len(body) <= _MAX_PHOTO_BYTES and h not in seen:
+                            seen.add(h)
+                            photo_data.append(body)
+                    except Exception as exc:
+                        log.warning("IAAI: failed to read response body: %s", exc)
 
                 condition_notes = await self._extract_damage(page)
             finally:
                 await browser.close()
 
-        log.warning("IAAI: %d photos (url=%s)", len(photos), url)
-        return {"photos": photos[:20], "condition_notes": condition_notes}
+        log.warning("IAAI: %d photos captured (url=%s)", len(photo_data), url)
+        return {"photo_data": photo_data, "condition_notes": condition_notes}
 
     async def _extract_damage(self, page) -> str:
         for selector in DAMAGE_SELECTORS:

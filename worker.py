@@ -30,7 +30,7 @@ from supabase import create_client, Client
 from adapters.copart import CopartAdapter
 from adapters.iaai import IAAIAdapter, IAAIAuthError
 from vin_decode import decode_vin
-from photo_upload import upload_photos
+from photo_upload import upload_photos, upload_photo_bytes
 from alerts import check_failure_rate, send_alert
 
 SUPABASE_URL = os.environ["SUPABASE_URL"].strip()
@@ -171,16 +171,24 @@ async def enrich_vehicle(vehicle: dict) -> dict:
                 if scraped.get("condition_notes") and not vehicle.get("condition_notes"):
                     enriched["condition_notes"] = scraped["condition_notes"]
 
-                # 3. Upload photos to Supabase Storage
+                # 3. Upload photos to Supabase Storage.
+                # IAAI adapter returns raw bytes via browser interception ("photo_data").
+                # Copart adapter returns URLs for download ("photos").
+                photo_bytes: list[bytes] = scraped.get("photo_data", [])
                 raw_urls: list[str] = scraped.get("photos", [])
-                if raw_urls:
-                    try:
+                try:
+                    if photo_bytes:
+                        public_urls = await upload_photo_bytes(vehicle["id"], photo_bytes)
+                        if public_urls:
+                            enriched["photos"] = public_urls
+                            log.info("Uploaded %d photos (bytes) for vehicle %s", len(public_urls), vehicle["id"])
+                    elif raw_urls:
                         public_urls = await upload_photos(vehicle["id"], raw_urls)
                         if public_urls:
                             enriched["photos"] = public_urls
-                            log.info("Uploaded %d photos for vehicle %s", len(public_urls), vehicle["id"])
-                    except Exception as exc:
-                        log.warning("Photo upload failed for vehicle %s: %s", vehicle["id"], exc)
+                            log.info("Uploaded %d photos (urls) for vehicle %s", len(public_urls), vehicle["id"])
+                except Exception as exc:
+                    log.warning("Photo upload failed for vehicle %s: %s", vehicle["id"], exc)
 
             except IAAIAuthError as exc:
                 # Session cookie expired — alert immediately so 818 admin can refresh
