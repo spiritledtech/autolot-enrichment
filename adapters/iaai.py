@@ -102,7 +102,7 @@ class IAAIAdapter:
             if not elements:
                 continue
             for el in elements:
-                src = (await el.get_attribute("src") or await el.get_attribute("data-src") or "").strip()
+                src = "".join((await el.get_attribute("src") or await el.get_attribute("data-src") or "").split())
                 if src and src not in photos:
                     photos.append(src)
             if photos:
