@@ -10,10 +10,12 @@ Bucket must be created before first use:
 """
 
 import hashlib
+import io
 import os
 from pathlib import PurePosixPath
 
 import httpx
+from PIL import Image
 from supabase import create_client
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
@@ -40,8 +42,18 @@ def _ext_from_url(url: str) -> str:
 
 def _storage_path(vehicle_id: str, photo_url: str, index: int) -> str:
     url_hash = hashlib.sha256(photo_url.encode()).hexdigest()[:8]
-    ext = _ext_from_url(photo_url)
-    return f"{vehicle_id}/{index:02d}_{url_hash}{ext}"
+    return f"{vehicle_id}/{index:02d}_{url_hash}.jpg"
+
+
+def _compress(content: bytes) -> bytes:
+    """Resize to max 1200px wide and re-encode as JPEG 75%. Returns compressed bytes."""
+    img = Image.open(io.BytesIO(content)).convert("RGB")
+    if img.width > 1200:
+        new_height = int(img.height * 1200 / img.width)
+        img = img.resize((1200, new_height), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=75, optimize=True)
+    return buf.getvalue()
 
 
 async def upload_photos(vehicle_id: str, photo_urls: list[str]) -> list[str]:
@@ -64,13 +76,13 @@ async def upload_photos(vehicle_id: str, photo_urls: list[str]) -> list[str]:
                 if len(content) > MAX_PHOTO_BYTES:
                     continue  # skip oversized
 
-                content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0]
+                content = _compress(content)
                 storage_path = _storage_path(vehicle_id, url, i)
 
                 supabase.storage.from_(BUCKET).upload(
                     path=storage_path,
                     file=content,
-                    file_options={"content-type": content_type, "upsert": "true"},
+                    file_options={"content-type": "image/jpeg", "upsert": "true"},
                 )
 
                 public_url = (
