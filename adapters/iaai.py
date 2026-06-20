@@ -8,6 +8,7 @@ We read the raw image bytes directly from the browser's already-completed
 responses, skipping any separate download step entirely.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -93,11 +94,12 @@ class IAAIAdapter:
                 await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                 log.warning("IAAI: page navigation complete, waiting for images...")
 
-                # Scroll to trigger lazy-loaded images then wait for them
+                # Scroll to trigger lazy-loaded images then wait for them.
+                # 5s is the minimum for IAAI's SPA to hydrate and fire image requests.
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await page.wait_for_timeout(2_000)
+                await page.wait_for_timeout(5_000)
                 await page.evaluate("window.scrollTo(0, 0)")
-                await page.wait_for_timeout(1_000)
+                await page.wait_for_timeout(2_000)
 
                 # Auth checks
                 page_url = page.url
@@ -124,10 +126,12 @@ class IAAIAdapter:
                         log.warning("IAAI: failed to read response body: %s", exc)
 
                 condition_notes = await self._extract_damage(page)
+                log.warning("IAAI: %d photos captured before close (url=%s)", len(photo_data), url)
             finally:
-                await browser.close()
-
-        log.warning("IAAI: %d photos captured (url=%s)", len(photo_data), url)
+                try:
+                    await asyncio.wait_for(browser.close(), timeout=5.0)
+                except Exception:
+                    pass  # force-abandon hung close; asyncio.wait_for in worker is the safety net
         return {"photo_data": photo_data, "condition_notes": condition_notes}
 
     async def _extract_damage(self, page) -> str:
