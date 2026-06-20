@@ -45,11 +45,18 @@ async def decode_vin(vin: str) -> dict:
 
     results: list[dict] = data.get("Results", [])
 
-    # Check for decode error
+    # Check for decode error — error code 1 means "no data found" but NHTSA may
+    # still return partial results (make/model/year), so log and continue rather
+    # than raising. Only raise on HTTP-level failures (handled above via raise_for_status).
     for item in results:
         if item.get("Variable") == _ERROR_VARIABLE:
-            if item.get("Value", "0") != _ERROR_GOOD:
-                raise ValueError(f"NHTSA decode error for VIN {vin}: {item.get('Value')}")
+            code = item.get("Value", "0")
+            if code != _ERROR_GOOD:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "NHTSA decode warning for VIN %s: error code %s — attempting partial decode",
+                    vin, code
+                )
             break
 
     decoded: dict = {}
